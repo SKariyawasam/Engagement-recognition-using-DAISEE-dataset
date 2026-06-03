@@ -2,8 +2,7 @@
 # coding: utf-8
 import tensorflow as tf
 import tensorflow.keras.layers as kl
-from tensorflow.keras.applications.vgg16 import VGG16
-from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
+from tensorflow.keras.applications.efficientnet import EfficientNetB0
 from daisee_data_preprocessing import DataPreprocessing
 import datetime
 import os
@@ -16,9 +15,9 @@ if len(physical_devices) > 0:
 BATCH_SIZE = 64
 LR = 0.005
 EPOCHS = 500
-use_pretrained = False
+use_pretrained = True  # Enforce pretrained usage
 data_augmentation = True
-pretrained_name = 'mobilenet'
+pretrained_name = 'efficientnet'
 current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 checkpoint_dir = 'checkpoints/'
 log_dir = 'logs/'
@@ -52,14 +51,10 @@ def network():
     model = tf.keras.Sequential()
     model.add(kl.InputLayer(input_shape=(224, 224, 3)))
     if use_pretrained:
-        if pretrained_name == 'vgg':
-            vgg = VGG16(weights='imagenet', input_shape=(224, 224, 3), include_top=False)
-            vgg.trainable = False
-            model.add(vgg)
-        if pretrained_name == 'mobilenet':
-            mobnet = MobileNetV2(weights='imagenet', input_shape=(224, 224, 3), include_top=False)
-            mobnet.trainable = False
-            model.add(mobnet)
+        if pretrained_name == 'efficientnet':
+            efficientnet = tf.keras.applications.EfficientNetB0(weights='imagenet', input_shape=(224, 224, 3), include_top=False)
+            efficientnet.trainable = False
+            model.add(efficientnet)
     else:
         # First conv block
         model.add(kl.Conv2D(filters=128, kernel_size=3, padding='same', strides=2))
