@@ -39,6 +39,7 @@ def network():
 
 @tf.function
 def macro_f1(y, y_hat, thresh=0.5):
+    y = tf.cast(y, tf.float32)
     y_pred = tf.cast(tf.greater(y_hat, thresh), tf.float32)
     tp = tf.cast(tf.math.count_nonzero(y_pred * y, axis=0), tf.float32)
     fp = tf.cast(tf.math.count_nonzero(y_pred * (1 - y), axis=0), tf.float32)
@@ -51,18 +52,17 @@ def train_step(model, optimizer, loss_fn, x, y, accum_gradients, accumulation_st
     with tf.GradientTape() as tape:
         logits = model(x, training=True)
         loss_value = loss_fn(y, logits)
-        # Scale loss for mixed precision
-        scaled_loss = optimizer.get_scaled_loss(loss_value)
     
     # Scale loss for gradient accumulation
-    scaled_loss = scaled_loss / tf.cast(accumulation_steps, tf.float32)
+    scaled_loss = loss_value / tf.cast(accumulation_steps, tf.float32)
     
-    scaled_gradients = tape.gradient(scaled_loss, model.trainable_weights)
-    gradients = optimizer.get_unscaled_gradients(scaled_gradients)
+    # Compute gradients (Keras 3 mixed precision handles loss scaling automatically)
+    gradients = tape.gradient(scaled_loss, model.trainable_weights)
     
     # Accumulate gradients
     for i in range(len(accum_gradients)):
-        accum_gradients[i].assign_add(gradients[i])
+        if gradients[i] is not None:
+            accum_gradients[i].assign_add(gradients[i])
         
     return loss_value, logits
 
@@ -133,9 +133,8 @@ if __name__ == '__main__':
 
     model = network()
     
-    # Mixed precision optimizer wrapper
-    inner_optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
-    optimizer = tf.keras.mixed_precision.LossScaleOptimizer(inner_optimizer)
+    # Keras 3 Mixed precision handles this natively through the policy
+    optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
     
     loss_fn = tf.keras.losses.BinaryCrossentropy()
     
@@ -191,9 +190,9 @@ if __name__ == '__main__':
 
         print(f"Train Loss: {train_loss_avg.result():.4f}, Train F1: {train_accuracy.result():.4f}, Val F1: {val_accuracy.result():.4f}")
         
-        train_accuracy.reset_states()
-        val_accuracy.reset_states()
-        train_loss_avg.reset_states()
+        train_accuracy.reset_state()
+        val_accuracy.reset_state()
+        train_loss_avg.reset_state()
         
         # Save at end of epoch
         manager.save()
