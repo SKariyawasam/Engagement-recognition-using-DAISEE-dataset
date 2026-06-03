@@ -44,24 +44,27 @@ class DataPreprocessing:
         self.max_frames = max_frames
         self.face_cascade = cv2.CascadeClassifier('dataset/haarcascade_frontalface_default.xml')
 
-    def get_images_from_set_dir(self, setdir):
+    def get_videos_from_set_dir(self, setdir):
         '''
-        Method to find all images in the tree folder
+        Method to find all videos in the tree folder
         '''
-        set_dir_images = []
+        set_dir_videos = []
+        if not os.path.exists(setdir):
+            return set_dir_videos
         humans = os.listdir(setdir)
         for human in humans:
-            human_dir = setdir + human + "/"
+            human_dir = os.path.join(setdir, human)
+            if not os.path.isdir(human_dir):
+                continue
             videos = os.listdir(human_dir)
             for video in videos:
-                video_dir = human_dir + video + "/"
-                pictures = os.listdir(video_dir)
-                pictures = random.sample(pictures, self.max_frames)
-                for picture in pictures:
-                    picture_dir = video_dir + picture
-                    if picture.endswith(".jpg"):
-                        set_dir_images.append(picture_dir)
-        return set_dir_images
+                video_dir = os.path.join(human_dir, video)
+                if not os.path.isdir(video_dir):
+                    continue
+                for f in os.listdir(video_dir):
+                    if f.lower().endswith((".avi", ".mp4")):
+                        set_dir_videos.append(os.path.join(video_dir, f))
+        return set_dir_videos
 
     def get_labels_dataframe(self):
         '''
@@ -79,7 +82,7 @@ class DataPreprocessing:
         # Crop and resize
         faces = self.face_cascade.detectMultiScale(image, 1.3, 5)
         try:
-            if faces != 0:
+            if len(faces) > 0:
                 x, y, w, h = faces[0]
                 image = image[y:y+h, x:x+w]
         except:
@@ -113,7 +116,7 @@ class DataPreprocessing:
         # Contrast
         contrast = tf.image.random_contrast(image, lower=0.0, upper=1.0).numpy()
         # Resize at the end
-        images = [self.resize(image) for image in [flipped, transposed, satured, brightness, contrast]]
+        images = [self.resize(img_aug) for img_aug in [flipped, transposed, satured, brightness, contrast]]
         return images
 
 
@@ -157,32 +160,67 @@ class DataPreprocessing:
                 ('test', self.test_dir, test_df),
                 ('val', self.val_dir, val_df)]
 
-        for name, dataset, label_df in tqdm(objs):
+        for name, dataset, label_df in objs:
+            print(f"Starting writeTfRecord for {name} dataset...")
             # Open Writer
-            writer = tf.io.TFRecordWriter(output_dir+name+'.tfrecords')
-            # Get all the images of a set
-            images_path = self.get_images_from_set_dir(dataset)
-            for image_path in tqdm(images_path, total=len(images_path)):
-                # Read the image from path
-                img = cv2.imread(image_path)[..., ::-1]
-                img = self.face_cropping(img)
-                # Read the label
-                label, error_ = self.get_label_picture(image_path, label_df)
-                if error_:
+            writer = tf.io.TFRecordWriter(os.path.join(output_dir, name + '.tfrecords'))
+            # Get all the videos of a set
+            videos_path = self.get_videos_from_set_dir(dataset)
+            for video_path in tqdm(videos_path, total=len(videos_path)):
+                video_name = os.path.basename(video_path)
+                
+                # Retrieve label
+                label_series = label_df.loc[((label_df['ClipID'] == video_name) | (label_df['ClipID'] == video_name.lower()))]
+                if label_series.empty:
+                    base_name = os.path.splitext(video_name)[0]
+                    label_series = label_df.loc[((label_df['ClipID'] == base_name+'.avi') | (label_df['ClipID'] == base_name+'.mp4'))]
+                
+                if label_series.empty:
                     continue
-                # Create a feature
-                if data_augmentation:
-                    images = self.augment_image(img)
-                else:
-                    images = img
-                for image in images:
-                    feature = {'label': self._bytes_feature(tf.compat.as_bytes(label.tostring())),
-                               'image': self._bytes_feature(tf.compat.as_bytes(image.tostring()))}
-                    # Create an example protocol buffer
-                    example = tf.train.Example(features=tf.train.Features(feature=feature))
+                    
+                try:
+                    index = label_series.index.values[0]
+                    label = np.array([label_series['Boredom'].get(index),
+                                      label_series['Engagement'].get(index),
+                                      label_series['Confusion'].get(index),
+                                      label_series['Frustration '].get(index)])
+                    label_one_hot = (label >= 1).astype(np.uint8)
+                except:
+                    continue
+                
+                cap = cv2.VideoCapture(video_path)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                if total_frames <= 0:
+                    cap.release()
+                    continue
+                
+                # Sample max_frames frames uniformly
+                frame_indices = np.linspace(0, total_frames - 1, self.max_frames, dtype=int)
+                
+                for idx in frame_indices:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        continue
+                    
+                    # Convert BGR to RGB
+                    img = frame[..., ::-1]
+                    img = self.face_cropping(img)
+                    
+                    if data_augmentation:
+                        images = self.augment_image(img)
+                    else:
+                        images = [img]
+                        
+                    for image in images:
+                        feature = {'label': self._bytes_feature(tf.compat.as_bytes(label_one_hot.tobytes())),
+                                   'image': self._bytes_feature(tf.compat.as_bytes(image.tobytes()))}
+                        # Create an example protocol buffer
+                        example = tf.train.Example(features=tf.train.Features(feature=feature))
 
-                    # Serialize to string and write on the file
-                    writer.write(example.SerializeToString())
+                        # Serialize to string and write on the file
+                        writer.write(example.SerializeToString())
+                cap.release()
             writer.close()
 
     def decode(self, serialized_example):
